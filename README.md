@@ -34,7 +34,7 @@ First, create a GARCE instance from `params`. `params` should include parameters
 'index': None, 'bloom', ...(other custom methods)
 '''
 from grace_dl.dist.helper import grace_from_params
-params = "{'compressor': 'topk', 'memory': 'residual', 'communicator': 'allgather', 'compress_ratio': 0.01, 'deepreduce':'index', 'index':'bloom'}"
+params = {'compressor': 'topk', 'memory': 'residual', 'communicator': 'allgather', 'compress_ratio': 0.01, 'deepreduce':'index', 'index':'bloom'}
 grc = grace_from_params(params)
 ```
 
