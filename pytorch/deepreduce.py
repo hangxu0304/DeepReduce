@@ -654,51 +654,6 @@ class PolyFitCPU(SparseCompressor):
 from pybloomfilter import BloomFilter
 
 
-def bloom_filter(indices, grad_size):
-    indices = np.asarray(indices)
-    err_rate = 0.1 / grad_size
-    bf = BloomFilter(len(indices), err_rate, '/tmp/test.bf')
-    for i, index in enumerate(indices):
-        bf.add((index) + i * grad_size)
-
-    fp_row = []
-    tp_row = []
-    for i in range(len(indices)):
-        count = 0
-        tp_row.append(i)
-        for x in range(grad_size):
-            temp = x + i * grad_size
-            if temp in bf:
-                count += 1
-                if count > 1:
-                    fp_row.append(i)
-                    break
-
-    return bf.to_base64(), fp_row
-
-
-def restore_bf(bf_tensor, num_true_idx, grad_size):
-    num_true_idx = int(num_true_idx)
-    b64_repr = bytes(list(np.asarray(bf_tensor)))
-    bf = BloomFilter.from_base64('/tmp/test.bf', b64_repr)
-    tp = []
-    for i in range(num_true_idx):
-        count = 0
-        for x in range(grad_size):
-            temp = x + i * grad_size
-            if temp in bf:
-                count += 1
-                true_index = x
-        if count == 1:
-            tp.append(true_index)
-    return tp
-
-
-def check_bf(idx):
-    bf = BloomFilter.open('/tmp/test.bf', mode="r")
-    return idx if idx in bf else None
-
-
 class BloomCPU(SparseCompressor):
     @staticmethod
     def compress(sparse_tensor, params):
