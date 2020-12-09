@@ -23,9 +23,9 @@ We use the following benchmarks to run our experiments:
 
 ## Usage
 
-For the usage of GARCE and environment setup etc., please check the guides [here](https://github.com/sands-lab/grace).
+For the usage of GRACE and environment setup etc., please check the guides [here](https://github.com/sands-lab/grace).
 
-First, create a GARCE instance from `params`. `params` should include parameters for both GARCE and DeepReduce. The valid parameter options for DeepReduce is listed as below:
+First, create a GRACE instance from `params`. `params` should include parameters for both GRACE and DeepReduce. The valid parameter options for DeepReduce is listed as below:
 
 ```python
 '''
