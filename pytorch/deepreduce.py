@@ -5,6 +5,7 @@ Author: Hang Xu
 
 import torch
 from grace_dl.dist import Compressor
+from grace_dl.dist.helper import tensor_bits
 
 ########################################################################
 # DeepReduce Framework
@@ -27,6 +28,9 @@ class SparseCompressor(object):
 def deepreduce_from_params(params):
     from grace_dl.dist.helper import grace_from_params
     # only sparsification compressors are valid if params['deepreduce'] is not None
+    if params['compressor'] in ['SKCompressCPU', 'sketch', 'SKCompressGPU']:
+        hash_30m = torch.load("./deepreduce/hash_table_18m_int.pt").cuda()
+        params['hash_table'] = hash_30m
     grc = grace_from_params(params)
 
     deepreduce = params.get('deepreduce', None)  # value, index, both
@@ -86,6 +90,9 @@ class ValueCompressor(Compressor):
             if self.params.get('micro-benchmark', False):
                 torch.cuda.synchronize()
                 print(f'val_decompression time:{time.time() - start}')
+                dense_tensor_bits = shape.numel() * 32
+                print(f'idx_relative_volume: {(tensor_bits([tensors[1]]) / dense_tensor_bits):.4f}')
+                print(f'val_relative_volume: {(tensor_bits([tensors[0]]) / dense_tensor_bits):.4f}')
         tensor_decompressed = self.sparsifier.decompress((vals, idxs), shape)
         return tensor_decompressed
 
@@ -138,6 +145,9 @@ class IndexCompressor(Compressor):
             if self.params.get('micro-benchmark', False):
                 torch.cuda.synchronize()
                 print(f'idx_decompression time:{time.time() - start}')
+                dense_tensor_bits = shape.numel() * 32
+                print(f'idx_relative_volume: {(tensor_bits([tensors[1]]) / dense_tensor_bits):.4f}')
+                print(f'val_relative_volume: {(tensor_bits([tensors[0]]) / dense_tensor_bits):.4f}')
 
         tensor_decompressed = self.sparsifier.decompress((vals, idxs), shape)
         return tensor_decompressed
@@ -252,7 +262,7 @@ class DeepReduce(Compressor):
             new_idxs = torch.arange(vals.numel(), device=vals.device)
             vals, mapping, shape = self.val_compressor.compress((vals, new_idxs, shape), self.params)
             # mapping = mapping.int()
-            mapping = self.pack(mapping, max_val=mapping.numel() - 1)
+            # mapping = self.pack(mapping, max_val=mapping.numel() - 1)
             ctx = shape
             tensors = (vals, idxs, mapping)
 
@@ -270,7 +280,7 @@ class DeepReduce(Compressor):
 
         if shape.numel() > 1000:
             vals, idxs, mapping = tensors
-            mapping = self.unpack(mapping)
+            # mapping = self.unpack(mapping)
             fitted_sparse_tensor = vals, mapping, shape
             vals, _, _ = self.val_compressor.decompress(fitted_sparse_tensor, self.params)
 
@@ -284,13 +294,16 @@ class DeepReduce(Compressor):
         if self.params.get('micro-benchmark', False):
             torch.cuda.synchronize()
             print(f'_decompression time:{time.time() - start}')
+            dense_tensor_bits = shape.numel() * 32
+            print(f'idx_relative_volume: {(tensor_bits(tensors[1:]) / dense_tensor_bits):.4f}')
+            print(f'val_relative_volume: {(tensor_bits([tensors[0]]) / dense_tensor_bits):.4f}')
 
         tensor_decompressed = self.sparsifier.decompress((vals, idxs), shape)
         return tensor_decompressed
 
 
 ########################################################################
-# PolyFit on GPU
+# PolyFit on GPU, not order-preserving
 
 def GetInputMatrix_Polynomial(N, degree, device):
     '''
@@ -334,38 +347,38 @@ def RestoreValues(N, coefficients):
     return y.view(-1)
 
 
+# def get_segments(N, num_pos=0):
+#     '''
+#     for same N, it returns same segments
+#     '''
+#     segments = []
+#     for r in [1/5, 1/10, 1 / 30, 1 / 100, 1/300, 1/1000, 1/3000, 1 / 10000, 1 / 30000, 1/100000]:
+#         if int(N*r) > 30:
+#             segments.append(int(N*r))
+#     segments = segments[::-1] + [N-2*sum(segments)] + segments
+#     return segments
+
+
 def get_segments(N, num_pos=0):
     '''
-    for same N, it returns same segments
+    for different nodes,num_pos in the grad are different, thus segments are different
+    need to set tensors_size_are_same=False for allgather communication
+    this is useful for TopK due to the discontinuity between positive and negative values
     '''
-    segments = []
-    for r in [1/5, 1/10, 1 / 30, 1 / 100, 1/300, 1/1000, 1/3000, 1 / 10000, 1 / 30000, 1/100000]:
-        if int(N*r) > 30:
-            segments.append(int(N*r))
-    segments = segments[::-1] + [N-2*sum(segments)] + segments
+    segments, pos, neg = [], [], []
+    num_neg = N - num_pos
+    for r in [1 / 5, 1 / 10, 1 / 30, 1 / 100, 1 / 300, 1 / 1000, 1 / 3000, 1 / 10000, 1 / 30000, 1 / 100000]:
+        if int(num_pos * r) > 30:
+            pos.append(int(num_pos * r))
+        if int(num_neg * r) > 30:
+            neg.append(int(num_neg * r))
+    segments = pos[::-1] + [num_pos - sum(pos)] + [num_neg - sum(neg)] + neg
 
     return segments
 
 
-# def get_segments(N, num_pos=0):
-#     '''
-#     for different nodes,num_pos in the grad are different, thus segments are different
-#     need to set tensors_size_are_same=False for allgather communication
-#     this is useful for TopK due to the discontinuity between positive and negative values
-#     '''
-#     segments, pos, neg = [], [], []
-#     num_neg = N - num_pos
-#     for r in [1 / 5, 1 / 10, 1 / 30, 1 / 100, 1 / 300, 1 / 1000, 1 / 3000, 1 / 10000, 1 / 30000, 1 / 100000]:
-#         if int(num_pos * r) > 30:
-#             pos.append(int(num_pos * r))
-#         if int(num_neg * r) > 30:
-#             neg.append(int(num_neg * r))
-#     segments = pos[::-1] + [num_pos - sum(pos)] + [num_neg - sum(neg)] + neg
-#
-#     return segments
-
-
 class PolyFit(SparseCompressor):
+    order_preserving = False
     @staticmethod
     def compress(sparse_tensor, params):
         sort = params.get('sort', False)
@@ -413,12 +426,12 @@ class PolyFit(SparseCompressor):
 
 
 ########################################################################
-# Bloom on GPU
+# Bloom on GPU, not order-preserving
 
-class BloomFilter(set):
+class Bloomfilter(set):
 
     def __init__(self, size, num_hash, params, bit_array=None):
-        super(BloomFilter, self).__init__()
+        super(Bloomfilter, self).__init__()
         if bit_array is not None:
             self.bit_array = bit_array
         else:
@@ -466,6 +479,16 @@ class BloomFilter(set):
     def policy(self, positives, k, policy):
         if policy == 'leftmost':
             res = positives[:k]
+        elif policy == 'random':
+            # if positives.numel() is always same, then with same seed, you will get same permutation
+            # in practice, when we get all non-zero elements from gradient, positives.numel() won't be the
+            # same across different iterations. However, if use TopK with fixed ratio here, we need to set
+            # different seeds at different iterations.
+            torch.manual_seed(42)
+            keys = torch.randperm(positives.numel(), device=positives.device)[:k]
+            res = positives[keys]
+        elif policy == 'p0':
+            res = positives
         return res
 
 
@@ -478,6 +501,7 @@ def get_BFconfig(capacity, fpr):
 
 
 class Bloom(SparseCompressor):
+    order_preserving = False
     @staticmethod
     def compress(sparse_tensor, params):
         vals, idxs, shape = sparse_tensor
@@ -485,40 +509,54 @@ class Bloom(SparseCompressor):
         num_indices = vals.numel()
 
         fpr = 0.1 * num_indices / grad_size
+        fpr = params.get('fpr', fpr)
+        policy = params.get('policy', 'leftmost')
         num_hash, bf_size = get_BFconfig(num_indices, fpr)
-        bloom = BloomFilter(bf_size, num_hash, params)
+        bloom = Bloomfilter(bf_size, num_hash, params)
         bloom.add(idxs)
 
         # apply fpaware
         dense_tensor = params.get('dense_tensor', None)
         if dense_tensor is not None:
             query_res = bloom.query(grad_size)
-            new_idxs = bloom.policy(query_res, idxs.numel(), 'leftmost')
+            new_idxs = bloom.policy(query_res, idxs.numel(), policy)
             vals = dense_tensor.flatten()[new_idxs]
+
+        if policy == 'p0':
+            num_indices = torch.as_tensor([num_indices], dtype=vals.dtype, device=vals.device)
+            vals = torch.cat([num_indices, vals], dim=0)
 
         bloom.pack_bitarray()
         bf_sparse_tensor = vals, bloom.bit_array, shape
+
         del vals, bloom
         return bf_sparse_tensor
 
     @staticmethod
     def decompress(bf_sparse_tensor, params):
         vals, bit_array, shape = bf_sparse_tensor
+        policy = params.get('policy', 'leftmost')
+        if policy == 'p0':
+            num_indices, vals = vals.split([1, vals.numel()-1])
+            num_indices = int(num_indices.item())
+        else:
+            num_indices = vals.numel()
         grad_size = shape.numel()
-        num_indices = vals.numel()
         fpr = 0.1 * num_indices / grad_size
+        fpr = params.get('fpr', fpr)
+
         num_hash, bf_size = get_BFconfig(num_indices, fpr)
-        bloom = BloomFilter(bf_size, num_hash, params, bit_array=bit_array)
+        bloom = Bloomfilter(bf_size, num_hash, params, bit_array=bit_array)
         bloom.unpack_bitarray()
         query_res = bloom.query(grad_size)
-        idxs = bloom.policy(query_res, num_indices, 'leftmost')
+        idxs = bloom.policy(query_res, num_indices, policy)
         sparse_tensor = vals, idxs, shape
         del bloom, query_res
         return sparse_tensor
 
 
 ########################################################################
-# PolyFit on CPU
+# PolyFit on CPU, not order-preserving
 import numpy as np
 import numpy.polynomial.polynomial as poly
 import warnings
@@ -582,6 +620,7 @@ def restore_curve(coefficients, breaks):
 
 
 class PolyFitCPU(SparseCompressor):
+    order_preserving = False
     @staticmethod
     def compress(sparse_tensor, params):
         vals, idxs, shape = sparse_tensor
@@ -650,11 +689,12 @@ class PolyFitCPU(SparseCompressor):
 
 
 ########################################################################
-# Bloom on CPU
+# Bloom on CPU, not order-preserving
 from pybloomfilter import BloomFilter
 
 
 class BloomCPU(SparseCompressor):
+    order_preserving = False
     @staticmethod
     def compress(sparse_tensor, params):
         vals, idxs, shape = sparse_tensor
@@ -697,10 +737,10 @@ class BloomCPU(SparseCompressor):
 
 
 ########################################################################
-# Gzip on CPU
+# Gzip on CPU, order-preserving
 
 class Gzip(SparseCompressor):
-
+    order_preserving = True
     @staticmethod
     def compress(sparse_tensor, params):
         import struct
@@ -709,7 +749,7 @@ class Gzip(SparseCompressor):
         data = vals.cpu()
         packed = struct.pack(f'{data.numel()}f', *data)
         zlib_packed = zlib.compress(packed)
-        vals = torch.as_tensor([b for b in zlib_packed], dtype=torch.uint8, device=idxs.device)
+        vals = torch.as_tensor(list(zlib_packed), dtype=torch.uint8, device=idxs.device)
         return vals, idxs, shape
 
     @staticmethod
@@ -725,162 +765,48 @@ class Gzip(SparseCompressor):
 
 
 ########################################################################
-# Huffman on CPU
+# Huffman on CPU, order-preserving
 
-class RunLengthHuffman():
-
-    def __init__(self):
-        super().__init__()
-        # self.code_length = 0
-        # self.encoded_document = []
-        # self.reverse_encoding = {}
-
-    def compress(self, quantized_grads):
-
-        document, doc_len, frequency = self.Run_Length_Encode_efficient(quantized_grads)
-
-        total_freq = 0
-        for key in frequency:
-            total_freq += frequency[key]
-
-        run_length_huff = self.Huffman_Encode(frequency)
-        encodings = {}
-        reverse_encodings = {}
-        for i in run_length_huff:
-            encodings[i[0]] = i[1]
-            reverse_encodings[i[1]] = i[0]
-
-        # encode the run length encoded document
-        encoded_doc = []
-        for i in range(doc_len):
-            encoded_doc.append(encodings[document[i]])
-
-        encoded_doc = "".join(encoded_doc)
-
-        # calculate the code-length of the run-length huffman code generated
-        run_code_length = 0
-        for i in run_length_huff:
-            run_code_length += frequency[i[0]] * len(i[1])
-
-        # store the variable as member variables of the classs
-        # self.code_length = run_code_length
-        # self.encoded_document = encoded_doc
-        reverse_encodings['encoded_doc'] = encoded_doc
-        # self.reverse_encoding = reverse_encodings
-        return reverse_encodings
-
-    def decompress(self, reverse_encodings):
-        encoded_document = reverse_encodings['encoded_doc']
-        decoded_doc = []
-        # run codeword
-        s = ""
-        # traverse the document bit-by-bit and check if current codeword is a valid codeword if yes initialize the run codeword to ""
-        for char in encoded_document:
-            s += char
-            try:
-                symbol = reverse_encodings[s]
-                val = int(symbol.split('c')[0])
-                for i in range(int(symbol.split('c')[-1])):
-                    decoded_doc.append(val)
-                s = ""
-            except:
-                continue
-        return decoded_doc
-
-    def Run_Length_Encode_efficient(self, grads):
-        out = []
-        index = 0
-        s = -10000
-        frequency = {}
-        for gradient_idx in range(len(grads)):
-            if gradient_idx == 0:
-                s = int(grads[gradient_idx])
-                count = 1
-
-            else:
-                if (s != int(grads[gradient_idx])):
-
-                    out.append(str(s) + 'c' + str(count))
-                    try:
-                        frequency[str(s) + 'c' + str(count)] += 1
-                    except KeyError as e:
-                        frequency[str(s) + 'c' + str(count)] = 1
-                    index += 1
-                    s = int(grads[gradient_idx])
-                    count = 1
-
-                else:
-                    count += 1
-
-            if (gradient_idx == len(grads) - 1):
-                out.append(str(s) + 'c' + str(count))
-                index += 1
-                try:
-                    frequency[str(s) + 'c' + str(count)] += 1
-                except KeyError as e:
-                    frequency[str(s) + 'c' + str(count)] = 1
-
-        return out, index, frequency
-
-    def Huffman_Encode(self, frequency):
-
-        import heapq
-        heap = [[weight, [symbol, '']] for symbol, weight in frequency.items()]
-        heapq.heapify(heap)
-        while len(heap) > 1:
-            low = heapq.heappop(heap)
-            high = heapq.heappop(heap)
-            for value in low[1:]:
-                value[1] = '0' + value[1]
-            for value in high[1:]:
-                value[1] = '1' + value[1]
-            heapq.heappush(heap, [low[0] + high[0]] + low[1:] + high[1:])
-        return sorted(heapq.heappop(heap)[1:], key=lambda p: (len(p[-1]), p))
-
-
-class RLHuff(SparseCompressor):
+class Huffman(SparseCompressor):
+    order_preserving = True
     @staticmethod
     def compress(sparse_tensor, params):
-        import json
         vals, idxs, shape = sparse_tensor
-        data = idxs.cpu()
 
-        rlhff = RunLengthHuffman()
-        huff_dict = rlhff.compress(data)
-        # encode = json.dumps(huff_dict).encode('utf-8')
-        # idxs = torch.ByteTensor([b for b in encode]).cuda()
-        params['huff_dict'] = huff_dict
+        import struct
+        from dahuffman import HuffmanCodec
+        data = torch.arange(shape.numel()).int()
+        packed = struct.pack(f'{data.numel()}i', *data)
+        codec = HuffmanCodec.from_data(packed)
 
-        # compute the size of Huffman dictionary
-        import math
-        m = len(huff_dict['encoded_doc'])
-        n = len(huff_dict) - 1
-        max_idx = data.max().item()
-        size = int(m/8 + (m+n)*2/8 + n*math.log(max_idx, 2)/8)   # size in bytes
-        # construct a dummy idxs just for data volume measurement
-        idxs = torch.zeros([size], dtype=torch.uint8, device=vals.device)
+        data = idxs.cpu().int()
+        packed = struct.pack(f'{data.numel()}i', *data)
+        huff_encoded = codec.encode(packed)
 
+        idxs = torch.as_tensor(list(huff_encoded), dtype=torch.uint8, device=vals.device)
         return vals, idxs, shape
 
     @staticmethod
-    def decompress(rlhff_sparse_tensor, params):
-        vals, idxs, shape = rlhff_sparse_tensor
-        # import json
-        # idxs_rlhff = idxs.cpu()
-        # s = bytes(idxs_rlhff)
-        # huff_dict = json.loads(s.decode('utf-8'))
+    def decompress(sparse_tensor, params):
+        vals, idxs, shape = sparse_tensor
+        import struct
+        from dahuffman import HuffmanCodec
+        data = torch.arange(shape.numel()).int()
+        packed = struct.pack(f'{data.numel()}i', *data)
+        codec = HuffmanCodec.from_data(packed)
 
-        huff_dict = params['huff_dict']
-        rlhff = RunLengthHuffman()
-        idxs_decode = rlhff.decompress(huff_dict)
-        idxs = torch.tensor(idxs_decode, dtype=torch.long, device=vals.device)
+        encoded = idxs.cpu()
+        packed = codec.decode(bytes(encoded))
+        idxs = struct.unpack(f'{int(len(packed) // 4)}i', packed)
+        idxs = torch.as_tensor(idxs, dtype=torch.long, device=vals.device)
         return vals, idxs, shape
 
 
 ########################################################################
-# RLE on CPU
+# RLE on CPU, not order-preserving
 
 class RunLength(SparseCompressor):
+    order_preserving = False
     @staticmethod
     def compress(sparse_tensor, params):
         vals, idxs, shape = sparse_tensor
@@ -921,51 +847,63 @@ class RunLength(SparseCompressor):
 
 
 ########################################################################
-# QSGD on GPU
+# QSGD on GPU, order-preserving
 
 class QSGD(SparseCompressor):
-
+    order_preserving = True
     @staticmethod
     def compress(sparse_tensor, params):
-        vals, idxs, shape = sparse_tensor
+        vals_all, idxs, shape = sparse_tensor
         quantum_num = params.get('quantum_num', 127)
+        bucket_size = params.get('bucket_size', 512)
 
-        norm = vals.norm()
-        abs_gradient = vals.abs()
+        vals_qsgd = []
+        for vals in vals_all.split(bucket_size):
+            norm = vals.norm()
+            abs_gradient = vals.abs()
 
-        level_float = quantum_num / norm * abs_gradient
-        previous_level = level_float.floor()
-        prob = torch.empty_like(vals).uniform_()
-        is_next_level = (prob < (level_float - previous_level)).type(torch.float32)
-        new_level = (previous_level + is_next_level)
+            level_float = quantum_num / norm * abs_gradient
+            previous_level = level_float.floor()
+            prob = torch.empty_like(vals).uniform_()
+            is_next_level = (prob < (level_float - previous_level)).type(torch.float32)
+            new_level = (previous_level + is_next_level)
 
-        sign = vals.sign()
-        tensor_compressed = (new_level * sign)
-        tensor_compressed = tensor_compressed.type(torch.int8 if quantum_num < 128 else torch.int16)
+            sign = vals.sign()
+            tensor_compressed = (new_level * sign)
+            tensor_compressed = tensor_compressed.type(torch.int8 if quantum_num < 128 else torch.int16)
 
-        #encode norm
-        import struct
-        packed = struct.pack('f', norm.cpu().item())
-        norm = torch.as_tensor([b-128 for b in packed], dtype=torch.int8, device=idxs.device)
+            #encode norm
+            import struct
+            packed = struct.pack('f', norm.cpu().item())
+            norm = torch.as_tensor([b-128 for b in packed], dtype=torch.int8, device=idxs.device)
 
-        vals = torch.cat([tensor_compressed, norm], dim=0)
+            vals = torch.cat([tensor_compressed, norm], dim=0)
+            vals_qsgd.append(vals)
+        vals = torch.cat(vals_qsgd, dim=0)
 
         return vals, idxs, shape
 
     @staticmethod
     def decompress(sparse_tensor, params):
-        vals, idxs, shape = sparse_tensor
+        vals_qsgd, idxs, shape = sparse_tensor
         quantum_num = params.get('quantum_num', 127)
-        vals, norm = vals.split([vals.numel()-4, 4])
+        bucket_size = params.get('bucket_size', 512)
 
-        # decode norm
-        import struct
-        norm = norm.int() + 128
-        norm = bytes(norm.cpu().type(torch.ByteTensor))
-        norm = struct.unpack('f', norm)[0]
+        vals_all = []
+        for vals in vals_qsgd.split(bucket_size+4):
+            vals, norm = vals.split([vals.numel()-4, 4])
 
-        decode_output = vals.type(torch.float32)
-        vals = norm / quantum_num * decode_output
+            # decode norm
+            import struct
+            norm = norm.int() + 128
+            norm = bytes(norm.cpu().type(torch.ByteTensor))
+            norm = struct.unpack('f', norm)[0]
+
+            decode_output = vals.type(torch.float32)
+            vals = norm / quantum_num * decode_output
+            vals_all.append(vals)
+
+        vals  = torch.cat(vals_all, dim=0)
         return vals, idxs, shape
 
 
@@ -978,7 +916,7 @@ compressor = {
     "bloom_cpu": BloomCPU,
     "polyfit_cpu": PolyFitCPU,
     "gzip": Gzip,
-    "rlhff": RLHuff,
+    "huffman": Huffman,
     "rle": RunLength,
     "qsgd": QSGD,
 }
