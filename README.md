@@ -2,7 +2,7 @@
 
 A Sparse-tensor Communication Framework for Distributed Deep Learning
 
-**Abstrat**: Sparse tensors appear frequently in distributed deep learning, either as a direct artifact of the deep neural network’s gradients, or as a result of an explicit sparsification process. Existing communication primitives are agnostic to the peculiarities of deep learning; consequently, they impose unnecessary communication overhead. We introduce DeepReduce, aversatile framework for the compressed communication of sparse tensors, tailored for distributed deep learning. DeepReduce decomposes sparse tensors in two sets, values and indices,and allows both independent and combined compression ofthese sets. We support a variety of common compressors, such as Deflate for values, or run-length encoding for indices. We also propose two novel compression schemes that achieve superior results: curve fitting-based for values and bloomfilter-based for indices. DeepReduce is orthogonal to existing gradient sparsifiers and can be applied in conjunction with them, transparently to the end-user, to significantly lower the communication overhead. As proof of concept, we implementour approach on Tensorflow and PyTorch. Our experiments with large real models demonstrate that DeepReduce transmits fewer data and imposes lower computational overhead than existing methods, without affecting the training accuracy.
+**Abstrat**: Sparse tensors appear frequently in distributed deep learning, either as a direct artifact of the deep neural network’s gradients, or as a result of an explicit sparsification process. Existing communication primitives are agnostic to the peculiarities of deep learning; consequently, they impose unnecessary communication overhead. We introduce DeepReduce, a versatile framework for the compressed communication of sparse tensors, tailored for distributed deep learning. DeepReduce decomposes sparse tensors in two sets, values and indices, and allows both independent and combined compression of these sets. We support a variety of common compressors, such as Deflate for values, or run-length encoding for indices. We also propose two novel compression schemes that achieve superior results: curve fitting-based for values and bloom filter-based for indices. DeepReduce is orthogonal to existing gradient sparsifiers and can be applied in conjunction with them, transparently to the end-user, to significantly lower the communication overhead. As proof of concept, we implement our approach on TensorFlow and PyTorch. Our experiments with large real models demonstrate that DeepReduce transmits fewer data and imposes lower computational overhead than existing methods, without affecting the training accuracy.
 
 ## Prerequisites
 
@@ -52,3 +52,25 @@ grc.compressor = DReduce
 
 We provide the bash scripts to reproduce the experiments in our paper. All experiment results are also available at [WANDB](https://wandb.ai/sands-lab/deepreduce/reports/DeepReduce--VmlldzoxODM5NTU) database.
 
+## Citation
+
+If you find this useful, please cite our work as:
+
+Kostopoulou K, Xu H, Dutta A, et al. DeepReduce: A Sparse-tensor Communication Framework for Distributed Deep Learning[J]. arXiv preprint arXiv:2102.03112, 2021.
+
+Here's a BibTeX blurb:
+
+```
+@misc{kostopoulou2021deepreduce,
+      title={DeepReduce: A Sparse-tensor Communication Framework for Distributed Deep Learning}, 
+      author={Kelly Kostopoulou and Hang Xu and Aritra Dutta and Xin Li and Alexandros Ntoulas and Panos Kalnis},
+      year={2021},
+      eprint={2102.03112},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG}
+}
+```
+
+## Publications
+
+* DeepReduce: A Sparse-tensor Communication Framework for Distributed Deep Learning [[arXiv]](https://arxiv.org/abs/2102.03112)<br>
